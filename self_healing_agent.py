@@ -437,7 +437,7 @@ if __name__ == "__main__":
 
     # Determine if --log is a file path or raw log text
     if os.path.exists(args.log):
-        with open(args.log, "r", encoding="utf-8") as f:
+        with open(args.log, "r", encoding="utf-16") as f:
             error_log_content = f.read()
     else:
         error_log_content = args.log
