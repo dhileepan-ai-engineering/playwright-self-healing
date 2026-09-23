@@ -2,6 +2,6 @@
   {
   "test_step": "Validate DOM Text Content",
   "raw_log": "Error: expect(received).toHaveText(expected)\nExpected: \"MARKETING JOURO\"\nReceived: \"MARKETING JOURNO\"",
-  "fix": "ASSERTION TEXT MISMATCH: The test failed because expected 'MARKETING JORNO' did not match actual DOM text 'MARKETING JOURNO'. Action: Locate the failing assertion call expect(locator).toHaveText(...) in the test file and update the string argument to exact DOM text 'MARKETING JOURNO'. Example: Change expect(page.getByRole('heading')).toHaveText(/MARKETING JOURO/i) to expect(page.getByRole('heading')).toHaveText(/MARKETING JOURNO/i)."
+  "fix": "ASSERTION TEXT MISMATCH: The test failed because expected 'MARKETING JORNO' did not match actual DOM text 'MARKETING JOURNO'. Action: Locate the failing assertion call expect(locator).toHaveText(...) in the test file and update the string argument to exact DOM text 'MARKETING JOURNO'. Example: Change expect(page.getByRole('heading')).toHaveText(/MARKETING JORNO/i) to expect(page.getByRole('heading')).toHaveText(/MARKETING JOURNO/i)."
   }
 ]
