@@ -1,0 +1,7 @@
+langchain-groq
+langchain-ollama
+langgraph
+chromadb
+sentence-transformers
+requests
+python-dotenv
