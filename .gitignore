@@ -1,0 +1,13 @@
+.env
+venv/
+test_failures_db/
+__pycache__/
+*.pyc
+bandit_memory.json
+node_modules/
+test-results/
+playwright-report/
+# Log file
+*.log
+error.log
+playwright_execution.log
