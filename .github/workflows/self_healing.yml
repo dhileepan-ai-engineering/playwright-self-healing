@@ -5,11 +5,14 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch: # Allows manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   heal-and-test:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # Enables git push permissions for committing self-healed code
 
     steps:
       - name: Checkout Repository
@@ -37,13 +40,29 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Step 1: Run Playwright tests first & dump output to failure.log
+      - name: Run Playwright Tests
+        id: playwright
+        continue-on-error: true # Prevents CI from stopping immediately on test failure
+        run: |
+          npx playwright test marketingJourno.spec.ts > failure.log 2>&1
+
+      # Step 2: Trigger Self-Healing Agent ONLY if the Playwright test failed
       - name: Execute Self-Healing Agent
+        if: steps.playwright.outcome == 'failure'
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # Replace paths with your actual spec file and log file locations
-          python self_healing_agent.py --spec tests/marketing.spec.ts --log failure.log --max-retries 2
+          python self_healing_agent.py --spec marketingJourno.spec.ts --log failure.log --max-retries 2
+
+      # Step 3: Commit and push patched files back to GitHub if fixes occurred
+      - name: Commit & Push Self-Healed Code
+        if: steps.playwright.outcome == 'failure'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --quiet && git diff --staged --quiet || (git commit -m "fix(self-healing): automated test repair via Llama 3.3" && git push)
 
       - name: Upload Bandit Memory / Artifacts
         if: always()
@@ -52,4 +71,5 @@ jobs:
           name: self-healing-artifacts
           path: |
             bandit_memory.json
+            failure.log
             playwright-report/
