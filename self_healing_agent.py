@@ -6,6 +6,8 @@ import re
 import subprocess
 import requests
 from typing import Any, Dict, List, TypedDict
+from pydantic import BaseModel, Field
+from langchain_core.tools import tool
 
 # Suppress HuggingFace Hub warnings and download progress bars
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -96,6 +98,10 @@ total_runs = 0
 
 def contextual_bandit_reranker(results: dict, top_k: int = 2, c: float = 1.5) -> List[Dict[str, Any]]:
     global total_runs
+    """
+    If a document ID is brand new and has never been played, 'total_runs' is '0'. Dividing by zero causes Python to crash with a 
+    ZeroDivisionError.
+    """
     total_runs += 1
 
     candidate_ids = results['ids'][0] if results['ids'] else []
@@ -135,7 +141,41 @@ def update_bandit_memory(matches: List[Dict[str, Any]], success: bool) -> None:
         json.dump(bandit_memory, f, indent=2)
 
 # ==============================================================================
-# 3. LANGGRAPH STATE & NODES
+# 3. DEfine STRONG OUTPUT SCHEMA (PYDANTIC CONTRACT)
+# ==============================================================================
+
+class CodePatch(BaseModel):
+    """ 
+    Schema representing an exact code patch to be applied to a test file. 
+    """
+    target_file: str = Field(description="The exact file path containing the broken code. This MUST be either the Target Spec File Path OR one of the file paths listed under 'Imported Page Object / Dependent Files' (e.g., 'pages/MarketingJournoPage.ts').")
+    original_snippet: str = Field(description="The exact single line or fragment causing code failure that needs replacing.")
+    fixed_snippet: str = Field(description="The correct single line or fragment replacement.")
+
+# ==============================================================================
+# 4. Delegates Execution Tooling
+# ==============================================================================
+@tool
+def apply_patch_to_disk(target_file: str, original_snippet: str, fixed_snippet: str, default_content: str) -> str:
+    """
+    Reads target file from disk, applies exact or fuzzy replacement, and returns modified code.
+    """
+
+    # Read target file content from disk if path exists
+    if os.path.exists(target_file):
+        try:
+            with open(target_file, "r", encoding="utf-8") as f:
+                file_content = f.read()
+        except Exception as e:
+            print(f"[Warning] Failed to read {target_file}: {e}")
+
+    # Perform exact replacement or fallback to fuzzy snippet replacement
+    if original_snippet and original_snippet in file_content:
+        return file_content.replace(original_snippet, fixed_snippet)
+    
+    return apply_fuzzy_snippet_replace(file_content, original_snippet, fixed_snippet)
+# ==============================================================================
+# 5. LANGGRAPH STATE & NODES
 # ==============================================================================
 
 class SelfHealingState(TypedDict):
@@ -176,11 +216,15 @@ def retrieval_node(state: SelfHealingState) -> dict:
     """
     IMPORTANT: 
 
-    a) The 'processed_query' is converted to a vector, say query vector, and the vectors closest to the
-    query vector in the collection 'playwright_errors' are retrieved along with the metadata and id
-    in the form of dictionary. 
+    a) The 'processed_query' is converted to a vector, say query vector, and the information of the vectors 
+    closest to the query vector in the collection 'playwright_errors' are retrieved such as the 'ids', 'distances',
+    'documents', 'metadatas', 'embeddings', 'uris', 'data' and 'included' in the form of dictionary. 
     
-    The number of vectors retrieved, along with the metadata and id, are subject to the conditions mentioned.
+    The number of vectors retrieved, along with the documents, metadata and id, are subject to the conditions 
+    mentioned.
+
+    The value of the attribute, 'embeddings' will be 'None' simply because that ChromaDB does not include the raw 
+    embedding arrays in the payload returned to Python to save memory and network bandwidth.
 
     b) The matches contains a list of dictionaries where each dictionary contains the key, 'id', 'doc',
     'metadata' and 'score'.
@@ -229,6 +273,7 @@ def apply_fuzzy_snippet_replace(content: str, original: str, fixed: str) -> str:
         return content
 
     lines = content.splitlines()
+    print(f"[Info] Searching for snippet in {len(lines)} lines of code...")
     for idx, line in enumerate(lines):
         if clean_original in line:
             # Preserve original line's leading whitespace/indentation
@@ -240,96 +285,79 @@ def apply_fuzzy_snippet_replace(content: str, original: str, fixed: str) -> str:
     return content
 
 def code_patcher_node(state: SelfHealingState) -> dict:
-    llm_context = []
-    for match in state["retrieved_matches"]:
-        llm_context.append(
-            f"Historical Fix Pattern: {match['metadata'].get('fix','')}\n"
-            f"Matched Log Structure: {match['doc']}"
-        )
+    # 1. Build Context Strings
+    llm_context = [
+        f"Historical Fix Pattern: {match['metadata'].get('fix', '')}\nMatched Log Structure: {match['doc']}"
+        for match in state.get("retrieved_matches", [])
+    ]
 
     context_str = "\n\n".join(llm_context)
     
-    # Dynamically discover and load Page Objects imported by this spec
+    # Load imported page objects
     imported_page_objects = resolve_imported_page_objects(state["spec_file_path"])
-    
-    page_objects_context = ""
-    for path, code in imported_page_objects.items():
-        page_objects_context += f"\n--- FILE: {path} ---\n{code}\n"
+    page_objects_context = "\n".join(
+        f"\n--- FILE: {path} ---\n{code}\n"
+        for path, code in imported_page_objects.items()
+    ) or "No imported Page Objects found."
 
-    # Fallback message if no imported Page Objects were detected
-    if not page_objects_context.strip():
-        page_objects_context = "No imported Page Objects found."
-
-    # Force SEARCH / REPLACE diff output format
+    # 2. System Instruction for LLM
     system_instruction = (
-        "You are an automated code repair assistant.\n"
-        "Your job is to spot the exact line causing the test error and provide a JSON edit patch.\n"
-        "DO NOT explain anything. Respond ONLY with valid JSON.\n\n"
-        "REQUIRED JSON OUTPUT FORMAT:\n"
-        "{\n"
-        '  "target_file": "<file_path_from_spec_or_imported_files>",\n'
-        '  "original_snippet": "<EXACT single line or fragment causing code failure>",\n'
-        '  "fixed_snippet": "<corrected single line or fragment>"\n'
-        "}"
+        "You are an automated Playwright repair assistant.\n"
+        "Your task is to locate the broken line in either the spec file or imported Page Objects and fix it.\n\n"
+        "CRITICAL CONSTRUCTOR RULE:\n"
+        "1. If a test fails due to a bad element selector, target the constructor assignment line starting with `this.<propertyName> = page.locator(...)` in the Page Object file.\n"
+        "2. NEVER target method execution lines like `await expect(...)` when fixing element locators.\n"
+        "3. DO NOT copy comments, header descriptions, or prompt instructions (like `// FIX:`, `// BREAK:`) into `original_snippet` or `fixed_snippet`.\n"
+        "4. `original_snippet` MUST be copied EXACTLY character-for-character from the actual source file code."
     )
     
     user_prompt = f"""
-        Target Spec File Path: {state['spec_file_path']}
-
-        Spec Source Code:
-        ```typescript
-        {state['current_code'][:3500]}
-        ```
-        
-        Imported Page Object / Dependent Files:
-        {page_objects_context[:2500]}
-
         Execution Error Log:
         {state['processed_query'][-1500:]}
+
+        Candidate Code Files to Inspect and Repair:
+        --- SPEC FILE: {state['spec_file_path']} ---
+        ```typescript
+        {state['current_code'][:3500]}
+        
+        --- IMPORTED PAGE OBJECTS / DEPENDENT FILES ---
+        {page_objects_context[:2500]}
 
         Historical Fix Patterns Reference:
         {context_str}
 
-        Provide the JSON patch now. No markdown explanations.
-    """
-
+        Task: Identify which exact candidate file path contains the broken line, set target_file to that file's path, and provide the minimal patch snippet.
+        """
     # Pass System & Human messages distinctly for Llama 3
     messages = [
         SystemMessage(content=system_instruction),
         HumanMessage(content=user_prompt)
     ]
 
-    response = llm.invoke(messages)
-    raw_content = str(response.content)
-
-    # Extract JSON block from response
-    json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
-    if not json_match:
-        print("[Warning] Llama 3 did not return JSON. Returning unpatched code.")
-        return {"proposed_code": state["current_code"], "target_file_path": state["spec_file_path"]}
+    # 3. Native Structured Output Binding (Eliminates regex & json parsing)
+    structured_llm = llm.with_structured_output(CodePatch)
 
     try:
-        patch_data = json.loads(json_match.group(0))
-        target_file_path = patch_data.get("target_file", state["spec_file_path"])
-        original_snippet = patch_data.get("original_snippet", "").strip()
-        fixed_snippet = patch_data.get("fixed_snippet", "").strip()
+        # LLM output is guaranteed to be a validated CodePatch Pydantic Object
+        patch: CodePatch =structured_llm.invoke(messages)
+        target_file_path = patch.target_file or state["spec_file_path"]
+        original_snippet = patch.original_snippet.strip()
+        fixed_snippet = patch.fixed_snippet.strip()
     except Exception as e:
-        print(f"[Warning] Failed to parse JSON patch: {e}")
-        return {"proposed_code": state["current_code"], "target_file_path": state["spec_file_path"]}
+        print(f"[Warning] Structured output extraction failed: {e}. Returning the unpatched code.")
+        return {
+            "proposed_code": state["current_code"], 
+            "target_file_path": state["spec_file_path"]
+            }
 
-    # Read target file content from disk
-    if os.path.exists(target_file_path):
-        with open(target_file_path, "r", encoding="utf-8") as f:
-            file_content = f.read()
-    else:
-        target_file_path = state["spec_file_path"]
-        file_content = state["current_code"]
+    # 4. Delegate File Operations to the Isolated tool
 
-    # Perform exact or line-indentation preserved replacement
-    if original_snippet and original_snippet in file_content:
-        patched_code = file_content.replace(original_snippet, fixed_snippet)
-    else:
-        patched_code = apply_fuzzy_snippet_replace(file_content, original_snippet, fixed_snippet)
+    patched_code =apply_patch_to_disk.invoke({
+        "target_file": target_file_path,
+        "original_snippet": original_snippet,
+        "fixed_snippet": fixed_snippet,
+        "default_content": state["current_code"]
+    })
 
     return {
         "proposed_code": patched_code,
@@ -389,7 +417,7 @@ def notify_node(state: SelfHealingState) -> dict:
     return {}
 
 # ==============================================================================
-# 4. CONDITIONAL ROUTING & GRAPH BUILDING
+# 6. CONDITIONAL ROUTING & GRAPH BUILDING
 # ==============================================================================
 def should_continue(state: SelfHealingState) -> str:
     if state["status"] == "SUCCESS":
@@ -425,11 +453,13 @@ workflow.add_edge("notify", END)
 app = workflow.compile()
 
 # ==============================================================================
-# 5. CLI EXECUTION ENTRY POINT
+# 7. CLI EXECUTION ENTRY POINT
 # ==============================================================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Gemini-Powered Playwright Self-Healing Agent")
-    parser.add_argument("--spec", required=True, help="Path to the Playwright spec or Page Object file")
+    # Create an instance or object of argparse.ArgumentParser
+    parser = argparse.ArgumentParser(description="Playwright Self-Healing Agent")
+    # Add arguments using add_argument() method
+    parser.add_argument("--spec", required=True, help="Path to the Playwright spec file")
     parser.add_argument("--log", required=True, help="Path to raw failure log file or log text string")
     parser.add_argument("--max-retries", type=int, default=2, help="Maximum self-healing attempts")
 

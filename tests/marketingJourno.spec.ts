@@ -11,4 +11,12 @@ test('Verify Marketing Journo Brand Display', async ({ page }) => {
   await test.step('Verify "MARKETING JOURNO" is displayed in the header', async () => {
     await mjPage.verifyBrandHeaderDisplayed();
   });
+
+  await test.step('Verify Twitter/X icon is displayed with correct href', async () => {
+    await mjPage.verifyTwitterIconDisplayed();
+  });
+
+  await test.step('Click the most recent blog post', async () => {
+    await mjPage.clickMostRecentBlogPost();
+  });
 });

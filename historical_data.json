@@ -3,5 +3,15 @@
   "test_step": "Validate DOM Text Content",
   "raw_log": "Error: expect(received).toHaveText(expected)\nExpected: \"MARKETING JOURO\"\nReceived: \"MARKETING JOURNO\"",
   "fix": "ASSERTION TEXT MISMATCH: The test failed because expected 'MARKETING JORNO' did not match actual DOM text 'MARKETING JOURNO'. Action: Locate the failing assertion call expect(locator).toHaveText(...) in the test file and update the string argument to exact DOM text 'MARKETING JOURNO'. Example: Change expect(page.getByRole('heading')).toHaveText(/MARKETING JORNO/i) to expect(page.getByRole('heading')).toHaveText(/MARKETING JOURNO/i)."
+  },
+  {
+    "test_step": "Verify Twitter Social Link",
+    "raw_log": "Error: locator.toHaveAttribute: Target page, context or browser has been closed\nCall log:\n  - waiting for locator('a[href*=\"twiter.com/MJ_offl\"]') to be visible",
+    "fix": "LOCATOR TYPO FIX: Fix typo in Page Object constructor assignment line by updating 'twiter' to 'twitter' in page.locator()."
+  },
+  {
+  "test_step": "Click the most recent blog post",
+  "raw_log": "TimeoutError: page.waitForLoadState: Timeout 100ms exceeded.\n       at pages\\MarketingJournoPage.ts:55\n      53 |     // FIX: Increase the timeout to 1000ms\n      54 |     await Promise.all([\n    > 55 |       this.page.waitForLoadState('load', { timeout: 100 })\n         |                 ^",
+  "fix": "TIMEOUT FIX: Update the timeout option in page.waitForLoadState from 100ms to 1000ms as intended in MarketingJournoPage.ts line 55."
   }
 ]

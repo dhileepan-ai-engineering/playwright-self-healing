@@ -25,3 +25,11 @@ Given('I navigate to the Marketing Journo home page', async () => {
 Then('I should see {string} displayed in the header', async (expectedBrandText: string) => {
   await mjPage.verifyBrandHeaderDisplayed();
 });
+
+Then('I should see the Twitter/X icon displayed with the correct href', async () => {
+  await mjPage.verifyTwitterIconDisplayed();
+});
+
+Then('I should click the most recent blog post', async () => {
+  await mjPage.clickMostRecentBlogPost();
+});
